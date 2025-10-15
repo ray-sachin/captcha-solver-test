@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Captcha Solver (Client-side OCR)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      padding: 1rem;
+      line-height: 1.45;
+      background: #0b1016;
+      color: #e7eef7;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 0.5rem 0; }
+    .card {
+      background: #121826;
+      border: 1px solid #2a3140;
+      border-radius: 10px;
+      padding: 1rem;
+      max-width: 980px;
+      margin: 0 auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,.35);
+    }
+    label { font-weight: 600; }
+    input[type="text"] {
+      width: 100%;
+      padding: 0.6rem 0.7rem;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #e2e8f0;
+      outline: none;
+    }
+    input[type="checkbox"], select { transform: translateY(2px); }
+    button {
+      appearance: none;
+      padding: 0.6rem 0.9rem;
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 0.6rem; }
+    .optrow { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem; }
+    .muted { color: #93a4b8; font-size: 0.9rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .preview {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .panel {
+      border: 1px dashed #2b3647;
+      border-radius: 8px;
+      padding: 0.75rem;
+      background: #0d1420;
+      min-height: 120px;
+    }
+    .panel h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    img {
+      max-width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      background: #0b0f1a;
+      display: block;
+      border-radius: 6px;
+      border: 1px solid #2a3140;
+    }
+    canvas { max-width: 100%; border-radius: 6px; border: 1px solid #2a3140; background: #0b0f1a; }
+    .status { margin-top: 0.5rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.4rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      border: 1px solid #36506b;
+      background: #0d1b2a;
+      color: #a6c8ff;
+      margin-left: 0.4rem;
+      vertical-align: middle;
+    }
+    .urlbox {
+      background: #0a1220;
+      border: 1px solid #223048;
+      padding: 0.5rem 0.6rem;
+      border-radius: 8px;
+      overflow: auto;
+    }
+    .footer { margin-top: 1rem; font-size: 0.85rem; color: #8ea2b7; }
+    @media (max-width: 900px) {
+      .preview { grid-template-columns: 1fr; }
+      .grid2 { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Captcha Solver</h1>
+    <p class="muted">Loads a captcha from the URL parameter and uses in-browser OCR to solve it. Add ?url=https://.../image.png to the page URL. Defaults to attached sample.png.</p>
+
+    <div class="row">
+      <div>
+        <label for="url">Captcha image URL</label>
+        <input id="url" type="text" placeholder="https://example.com/captcha.png" />
+        <div class="optrow">
+          <label><input type="checkbox" id="autoproxy" checked /> Use CORS proxy (recommended)</label>
+          <label>
+            Proxy:
+            <select id="proxymode">
+              <option value="cors">cors.isomorphic (default)</option>
+              <option value="weserv">images.weserv.nl</option>
+              <option value="none">none (direct)</option>
+            </select>
+          </label>
+          <label>
+            Scale:
+            <select id="scale">
+              <option value="2">2x</option>
+              <option value="3" selected>3x</option>
+              <option value="4">4x</option>
+            </select>
+          </label>
+          <label>
+            PSM:
+            <select id="psm">
+              <option value="7">7 (single text line)</option>
+              <option value="8" selected>8 (single word)</option>
+              <option value="10">10 (single char)</option>
+              <option value="6">6 (block)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; align-items:end;">
+        <button id="solveBtn">Solve Captcha</button>
+      </div>
+    </div>
+
+    <div class="status">
+      <div>Image URL param: <span id="urlEcho" class="mono urlbox"></span></div>
+      <div class="muted">Used source: <span id="usedEcho" class="mono"></span> <span id="proxyBadge" class="badge" title="Indicates whether a proxy is used for CORS">proxy</span></div>
+      <div id="progress" class="muted">Idle.</div>
+    </div>
+
+    <div class="preview">
+      <div class="panel">
+        <h3>Original</h3>
+        <img id="img" alt="captcha preview" />
+      </div>
+      <div class="panel">
+        <h3>Preprocessed</h3>
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:1rem;">
+      <h3>Solution</h3>
+      <div class="grid2">
+        <div>
+          <div><strong>Text:</strong> <span id="resultText" class="mono"></span></div>
+          <div class="muted"><strong>Confidence:</strong> <span id="resultConf"></span></div>
+        </div>
+        <div>
+          <div class="muted"><strong>Timing:</strong> <span id="timing"></span></div>
+          <div class="muted"><strong>Engine:</strong> Tesseract.js (fast eng)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Tips:
+      <ul>
+        <li>If the remote site blocks CORS, keep "Use CORS proxy" enabled.</li>
+        <li>Adjust PSM (page segmentation mode) and Scale for better accuracy.</li>
+      </ul>
+      <div class="muted">MIT Licensed. No data leaves your browser.</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+  <script>
+    (function () {
+      const qs = new URLSearchParams(location.search);
+      const urlInput = document.getElementById('url');
+      const imgEl = document.getElementById('img');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      const urlEcho = document.getElementById('urlEcho');
+      const usedEcho = document.getElementById('usedEcho');
+      const progress = document.getElementById('progress');
+      const proxyBadge = document.getElementById('proxyBadge');
+      const resultText = document.getElementById('resultText');
+      const resultConf = document.getElementById('resultConf');
+      const timingEl = document.getElementById('timing');
+      const solveBtn = document.getElementById('solveBtn');
+      const autoproxyEl = document.getElementById('autoproxy');
+      const proxymodeEl = document.getElementById('proxymode');
+      const scaleEl = document.getElementById('scale');
+      const psmEl = document.getElementById('psm');
+
+      const defaultUrl = 'sample.png';
+
+      function decodePlus(s) {
+        try { return decodeURIComponent(s.replace(/\+/g, '%20')); } catch { return s; }
+      }
+
+      function sameOrigin(u) {
+        try {
+          const a = new URL(u, location.href);
+          return a.origin === location.origin;
+        } catch { return false; }
+      }
+
+      function toWeserv(u) {
+        try {
+          const a = new URL(u);
+          return 'https://images.weserv.nl/?url=' + encodeURIComponent(a.host + a.pathname + a.search);
+        } catch {
+          return u;
+        }
+      }
+
+      function proxify(u) {
+        const mode = proxymodeEl.value;
+        const useProxy = autoproxyEl.checked;
+        if (!u || u.startsWith('data:') || u.startsWith('blob:') || sameOrigin(u)) {
+          proxyBadge.textContent = 'proxy: off';
+          return u;
+        }
+        if (!useProxy || mode === 'none') {
+          proxyBadge.textContent = 'proxy: off';
+          return u;
+        }
+        if (mode === 'weserv') {
+          proxyBadge.textContent = 'proxy: weserv';
+          return toWeserv(u);
+        }
+        proxyBadge.textContent = 'proxy: cors.isomorphic';
+        return 'https://cors.isomorphic-git.org/' + u;
+      }
+
+      function setStatus(msg) {
+        progress.textContent = msg;
+      }
+
+      function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+      function drawPreprocessed(img, scale = 3) {
+        const w = Math.max(1, Math.floor(img.naturalWidth * scale));
+        const h = Math.max(1, Math.floor(img.naturalHeight * scale));
+        canvas.width = w;
+        canvas.height = h;
+
+        // Nearest neighbor upscale
+        const tmp = document.createElement('canvas');
+        tmp.width = img.naturalWidth;
+        tmp.height = img.naturalHeight;
+        const tctx = tmp.getContext('2d');
+        tctx.drawImage(img, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, 0, 0, w, h);
+
+        let imgData = ctx.getImageData(0, 0, w, h);
+        const data = imgData.data;
+
+        // Grayscale + histogram
+        const hist = new Uint32Array(256);
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i+1], b = data[i+2];
+          const v = Math.round(0.2126*r + 0.7152*g + 0.0722*b);
+          data[i] = data[i+1] = data[i+2] = v;
+          hist[v]++;
+        }
+
+        // Otsu threshold
+        let total = w * h;
+        let sum = 0;
+        for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+        let sumB = 0, wB = 0, wF = 0;
+        let maxVar = -1, threshold = 128;
+        for (let t = 0; t < 256; t++) {
+          wB += hist[t];
+          if (wB === 0) continue;
+          wF = total - wB;
+          if (wF === 0) break;
+          sumB += t * hist[t];
+          const mB = sumB / wB;
+          const mF = (sum - sumB) / wF;
+          const varBetween = wB * wF * (mB - mF) * (mB - mF);
+          if (varBetween > maxVar) {
+            maxVar = varBetween;
+            threshold = t;
+          }
+        }
+
+        // Apply threshold and invert if needed (ensure black text on white bg)
+        let sumAfter = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const v = data[i] > threshold ? 255 : 0;
+          sumAfter += v;
+          data[i] = data[i+1] = data[i+2] = v;
+          data[i+3] = 255;
+        }
+        const mean = sumAfter / (w*h);
+        const invert = mean < 127; // if mostly black, invert
+        if (invert) {
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = 255 - data[i];
+            data[i+1] = 255 - data[i+1];
+            data[i+2] = 255 - data[i+2];
+          }
+        }
+
+        // Slight dilation/erosion toggle (optional quick cleanup)
+        // Simple 3x3 median filter to reduce noise
+        const copy = new Uint8ClampedArray(data);
+        const get = (x,y) => copy[(y*w + x)*4];
+        for (let y = 1; y < h-1; y++) {
+          for (let x = 1; x < w-1; x++) {
+            const vals = [
+              get(x-1,y-1),get(x,y-1),get(x+1,y-1),
+              get(x-1,y),  get(x,y),  get(x+1,y),
+              get(x-1,y+1),get(x,y+1),get(x+1,y+1),
+            ].sort((a,b)=>a-b);
+            const m = vals[4];
+            const idx = (y*w + x)*4;
+            data[idx]=data[idx+1]=data[idx+2]=m;
+          }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+        return canvas;
+      }
+
+      async function loadImage(src) {
+        return new Promise((resolve, reject) => {
+          const im = new Image();
+          im.crossOrigin = 'anonymous';
+          im.onload = () => resolve(im);
+          im.onerror = (e) => reject(new Error('Failed to load image: ' + src));
+          im.src = src;
+        });
+      }
+
+      async function solve() {
+        const rawUrl = urlInput.value.trim() || defaultUrl;
+        const usedUrl = proxify(rawUrl);
+
+        resultText.textContent = '';
+        resultConf.textContent = '';
+        timingEl.textContent = '';
+        setStatus('Loading image...');
+
+        urlEcho.textContent = rawUrl || '(none)';
+        usedEcho.textContent = usedUrl === rawUrl ? '(direct)' : usedUrl;
+
+        let start = performance.now();
+        let img;
+        try {
+          img = await loadImage(usedUrl);
+        } catch (e) {
+          setStatus('Image load failed. Try enabling proxy or using a different proxy.');
+          throw e;
+        }
+        imgEl.src = img.src;
+
+        const scale = parseInt(scaleEl.value || '3', 10);
+        drawPreprocessed(img, scale);
+        setStatus('Initializing OCR engine...');
+
+        const psm = psmEl.value || '8';
+        const worker = Tesseract.createWorker({
+          // Use fast language data to reduce load time
+          langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast',
+          gzip: false,
+          workerPath: 'https://unpkg.com/tesseract.js@5.0.4/dist/worker.min.js',
+          corePath: 'https://unpkg.com/tesseract.js-core@5.0.0/dist/tesseract-core.wasm.js',
+          logger: (m) => {
+            if (m.status) setStatus(`${m.status} ${m.progress ? Math.round(m.progress*100)+'%' : ''}`);
+          }
+        });
+
+        const overallTimeoutMs = 15000; // aim to finish within 15s
+        const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out')), overallTimeoutMs));
+
+        try {
+          await Promise.race([ (async () => {
+            await worker.load();
+            await worker.loadLanguage('eng');
+            await worker.initialize('eng');
+            await worker.setParameters({
+              tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
+              tessedit_pageseg_mode: psm, // 8 single word default
+              user_defined_dpi: '100'
+            });
+
+            setStatus('Recognizing...');
+            const recStart = performance.now();
+            const { data } = await worker.recognize(canvas);
+            const recEnd = performance.now();
+
+            const text = (data.text || '').trim();
+            let conf = data.confidence;
+            if (Array.isArray(data.words) && data.words.length) {
+              // get average confidence from words if available
+              conf = Math.round(data.words.reduce((s,w)=>s+(w.confidence||0),0)/data.words.length);
+            } else {
+              conf = Math.round(conf || 0);
+            }
+
+            resultText.textContent = text || '(no text detected)';
+            resultConf.textContent = isFinite(conf) ? `${conf}%` : 'n/a';
+
+            const totalMs = Math.round(recEnd - start);
+            const recMs = Math.round(recEnd - recStart);
+            timingEl.textContent = `total ${totalMs} ms (OCR ${recMs} ms)`;
+            setStatus('Done.');
+            await worker.terminate();
+          })(), timeoutPromise ]);
+        } catch (err) {
+          setStatus('OCR failed: ' + err.message);
+          try { await worker.terminate(); } catch {}
+        }
+      }
+
+      function initFromQuery() {
+        const urlParam = decodePlus(qs.get('url') || '');
+        urlInput.value = urlParam || defaultUrl;
+
+        const proxyParam = qs.get('proxy');
+        if (proxyParam === '0' || proxyParam === 'false' || proxyParam === 'none') {
+          autoproxyEl.checked = false;
+          proxymodeEl.value = 'none';
+        }
+        if (proxyParam === 'weserv') {
+          autoproxyEl.checked = true;
+          proxymodeEl.value = 'weserv';
+        }
+        if (proxyParam === 'cors') {
+          autoproxyEl.checked = true;
+          proxymodeEl.value = 'cors';
+        }
+
+        const psmParam = qs.get('psm');
+        if (psmParam) psmEl.value = psmParam;
+
+        const scaleParam = qs.get('scale');
+        if (scaleParam) scaleEl.value = scaleParam;
+
+        urlEcho.textContent = urlInput.value;
+        usedEcho.textContent = '(pending)';
+
+        // Auto-solve on load
+        solve().catch(()=>{});
+      }
+
+      solveBtn.addEventListener('click', () => {
+        solveBtn.disabled = true;
+        solve().finally(() => { solveBtn.disabled = false; });
+      });
+
+      initFromQuery();
+    })();
+  </script>
+</body>
+</html>
